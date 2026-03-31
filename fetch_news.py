@@ -542,197 +542,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </body>
 </html>"""
 
-SECTION_TEMPLATE = """
-<div class="section">
-  <div class="section-header">
-    <div class="section-badge" style="background:{bg}; color:{color};">
-      {label}
-      <span class="section-count" style="color:{color};">{count}</span>
-    </div>
-  </div>
-  {cards}
-</div>
-"""
+SECTION_TEMPLATE = """name: Daily News Push
 
-CARD_TEMPLATE = """<a class="card" href="{url}" target="_blank" rel="noopener">
-  <div class="card-source">
-    <span class="source-dot" style="background:{color};"></span>
-    <span class="source-name">{source}</span>
-    <span class="source-time">{time}</span>
-  </div>
-  <div class="card-title">{title}</div>
-  {desc_html}
-  <div class="card-link">阅读全文 →</div>
-</a>"""
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
 
+jobs:
+  push-news:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Run news fetch and push
+        run: python ./fetch_news.py
+        env:
+          WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
+          WXPUSHER_UID: ${{ secrets.WXPUSHER_UID }}
 
-def parse_time(time_str: str) -> str:
-    """解析并格式化时间"""
-    if not time_str:
-        return ""
-    formats = [
-        "%Y-%m-%dT%H:%M:%SZ",
-        "%a, %d %b %Y %H:%M:%S %z",
-        "%a, %d %b %Y %H:%M:%S GMT",
-        "%Y-%m-%dT%H:%M:%S%z",
-    ]
-    for fmt in formats:
-        try:
-            dt = datetime.strptime(time_str.strip(), fmt)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            dt_cn = dt.astimezone(CN_TZ)
-            return dt_cn.strftime("%m/%d %H:%M")
-        except Exception:
-            pass
-    return time_str[:10] if len(time_str) > 10 else time_str
-
-
-def generate_html(articles: list[dict]) -> str:
-    """生成 HTML 日报"""
-    now = datetime.now(CN_TZ)
-    date_str = now.strftime("%Y-%m-%d")
-    date_cn = now.strftime("%Y年%m月%d日")
-
-    # 按分类分组
-    groups: dict[str, list] = {}
-    for art in articles:
-        cat = art.get("category", "general")
-        groups.setdefault(cat, []).append(art)
-
-    sections_html = ""
-    source_names = set()
-
-    for cat in ["macro", "finance", "tech", "general"]:
-        items = groups.get(cat, [])
-        if not items:
-            continue
-        cfg = CATEGORY_CONFIG[cat]
-
-        cards_html = ""
-        for art in items:
-            source_names.add(art["source"])
-            desc_html = ""
-            if art.get("description"):
-                desc_html = f'<div class="card-desc">{art["description"][:150]}</div>'
-            cards_html += CARD_TEMPLATE.format(
-                url=art.get("url", "#"),
-                color=cfg["color"],
-                source=art["source"],
-                time=parse_time(art.get("published_at", "")),
-                title=art["title"],
-                desc_html=desc_html,
-            )
-
-        sections_html += SECTION_TEMPLATE.format(
-            bg=cfg["bg"],
-            color=cfg["color"],
-            label=cfg["label"],
-            count=len(items),
-            cards=cards_html,
-        )
-
-    return HTML_TEMPLATE.format(
-        date=date_str,
-        date_cn=date_cn,
-        total_count=len(articles),
-        source_count=len(source_names),
-        category_count=len(groups),
-        sections=sections_html,
-    )
-
-
-# ─────────────────────────────────────────────
-# WxPusher 推送模块
-# ─────────────────────────────────────────────
-
-def push_via_wxpusher(html_path: str, app_token: str, uid: str, summary: str) -> bool:
-    """通过 WxPusher 推送消息"""
-    if not app_token or not uid:
-        print("[WxPusher] 未配置 app_token 或 uid，跳过推送")
-        return False
-
-    # 读取 HTML 内容
-    with open(html_path, "r", encoding="utf-8") as f:
-        html_content = f.read()
-
-    # WxPusher 支持直接发送 HTML
-    payload = json.dumps({
-        "appToken": app_token,
-        "content": html_content,
-        "summary": summary,  # 微信消息预览文字
-        "contentType": 2,    # 2 = HTML
-        "uids": [uid],
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        "https://wxpusher.zjiecode.com/api/send/message",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            result = json.loads(resp.read().decode())
-            if result.get("success"):
-                print(f"[WxPusher] ✅ 推送成功！")
-                return True
-            else:
-                print(f"[WxPusher] ❌ 推送失败: {result.get('msg')}")
-                return False
-    except Exception as e:
-        print(f"[WxPusher] ❌ 推送异常: {e}")
-        return False
-
-
-# ─────────────────────────────────────────────
-# 主流程
-# ─────────────────────────────────────────────
-
-def main():
-    print(f"\n{'='*50}")
-    print(f"🌐 国际商务日报生成器")
-    print(f"{'='*50}")
-    now = datetime.now(CN_TZ)
-    print(f"⏰ 运行时间：{now.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)\n")
-
-    # 1. 抓取资讯
-    print("📡 正在抓取资讯...")
-    articles = gather_all_news()
-    print(f"\n✅ 共获取 {len(articles)} 条资讯\n")
-
-    if not articles:
-        print("⚠️  未能获取任何资讯，请检查网络连接")
-        sys.exit(1)
-
-    # 2. 生成 HTML
-    print("🎨 正在生成 HTML 日报...")
-    html_content = generate_html(articles)
-
-    output_dir = Path(CONFIG["output_dir"])
-    output_dir.mkdir(exist_ok=True)
-    date_str = now.strftime("%Y-%m-%d")
-    html_path = output_dir / f"daily-report-{date_str}.html"
-
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html_content)
-    print(f"✅ 日报已生成：{html_path}\n")
-
-    # 3. 推送到微信
-    summary = f"📰 {now.strftime('%m/%d')} 国际商务日报 | {len(articles)} 条资讯，涵盖宏观贸易、金融市场、科技商业"
-    print("📲 正在推送到微信...")
-    push_via_wxpusher(
-        str(html_path),
-        CONFIG["wxpusher_app_token"],
-        CONFIG["wxpusher_uid"],
-        summary,
-    )
-
-    print(f"\n{'='*50}")
-    print(f"🎉 完成！报告保存在：{html_path}")
-    print(f"{'='*50}\n")
-
-
-if __name__ == "__main__":
     main()
