@@ -12,14 +12,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: List files
+        run: |
+          echo "Current directory:"
+          pwd
+          echo "Files in current directory:"
+          ls -la
+          echo "Files in parent directory:"
+          ls -la ..
+      
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
-      - name: Check files
-        run: |
-          pwd
-          ls -la
       
       - name: Run script
         env:
